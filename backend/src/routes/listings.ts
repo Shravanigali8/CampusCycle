@@ -4,96 +4,328 @@ import { authRequired, AuthedRequest } from '../middleware/auth';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { z } from 'zod';
 
 const router = express.Router();
 
 const uploadDir = path.join(process.cwd(), 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
 });
-const upload = multer({ storage, limits: { files: 5 } });
 
-router.get('/', authRequired, async (req: AuthedRequest, res) => {
-  const { campus } = req.user;
-  const { category, minPrice, maxPrice, freeOnly, under20, condition, q, sort, page = 1 } = req.query as any;
-  const where: any = { campus };
-  if (category) where.category = category;
-  if (condition) where.condition = condition;
-  if (freeOnly === 'true') where.price = 0;
-  if (under20 === 'true') where.price = { lte: 20 };
-  if (minPrice) where.price = { ...(where.price || {}), gte: Number(minPrice) };
-  if (maxPrice) where.price = { ...(where.price || {}), lte: Number(maxPrice) };
-  if (q) where.title = { contains: q, mode: 'insensitive' };
-  const orderBy = sort === 'newest' ? { createdAt: 'desc' } : { createdAt: 'desc' };
-  const listings = await prisma.listing.findMany({ where, include: { images: true, seller: true }, orderBy, take: 30, skip: (Number(page) - 1) * 30 });
-  res.json({ listings });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024, files: 5 }, // 5MB per file, max 5 files
+  fileFilter: (_req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif|webp/;
+    const mimetype = allowed.test(file.mimetype);
+    const extname = allowed.test(path.extname(file.originalname).toLowerCase());
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error('Only image files are allowed'));
+  },
 });
 
+const createListingSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().min(1).max(5000),
+  category: z.string().min(1),
+  condition: z.string().min(1),
+  price: z.number().min(0),
+  isGiveaway: z.boolean().optional().default(false),
+  status: z.enum(['AVAILABLE', 'CLAIMED', 'SOLD']).optional().default('AVAILABLE'),
+  location: z.string().optional(),
+  zipcode: z.string().optional(),
+  availableFrom: z.string().datetime().optional(),
+  availableTo: z.string().datetime().optional(),
+});
+
+const updateListingSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().min(1).max(5000).optional(),
+  category: z.string().min(1).optional(),
+  condition: z.string().min(1).optional(),
+  price: z.number().min(0).optional(),
+  isGiveaway: z.boolean().optional(),
+  status: z.enum(['AVAILABLE', 'CLAIMED', 'SOLD']).optional(),
+  location: z.string().optional(),
+  zipcode: z.string().optional(),
+  availableFrom: z.string().datetime().optional(),
+  availableTo: z.string().datetime().optional(),
+});
+
+// GET /listings - Search with filters
+router.get('/', authRequired, async (req: AuthedRequest, res) => {
+  try {
+    const {
+      category,
+      minPrice,
+      maxPrice,
+      condition,
+      isGiveaway,
+      status,
+      q,
+      zipcode,
+      sort = 'newest',
+      page = 1,
+    } = req.query as any;
+
+    const where: any = {
+      campusId: req.user.campusId,
+    };
+
+    // Only show available listings by default (users can filter)
+    if (status) {
+      where.status = status;
+    } else {
+      where.status = { in: ['AVAILABLE', 'CLAIMED'] }; // Don't show sold by default
+    }
+
+    if (category) where.category = category;
+    if (condition) where.condition = condition;
+    if (isGiveaway === 'true') where.isGiveaway = true;
+    if (zipcode) where.zipcode = zipcode;
+
+    // Price filters
+    if (minPrice || maxPrice) {
+      where.price = {};
+      if (minPrice) where.price.gte = Number(minPrice);
+      if (maxPrice) where.price.lte = Number(maxPrice);
+    }
+
+    // Keyword search
+    if (q) {
+      where.OR = [
+        { title: { contains: q as string, mode: 'insensitive' } },
+        { description: { contains: q as string, mode: 'insensitive' } },
+      ];
+    }
+
+    const orderBy =
+      sort === 'price-low'
+        ? { price: 'asc' }
+        : sort === 'price-high'
+        ? { price: 'desc' }
+        : { createdAt: 'desc' };
+
+    const pageNum = Number(page) || 1;
+    const pageSize = 30;
+    const skip = (pageNum - 1) * pageSize;
+
+    const [listings, total] = await Promise.all([
+      prisma.listing.findMany({
+        where,
+        include: {
+          images: true,
+          seller: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              avatar: true,
+            },
+          },
+        },
+        orderBy,
+        take: pageSize,
+        skip,
+      }),
+      prisma.listing.count({ where }),
+    ]);
+
+    res.json({
+      listings,
+      pagination: {
+        page: pageNum,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+      },
+    });
+  } catch (err) {
+    console.error('Get listings error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /listings - Create listing
 router.post('/', authRequired, upload.array('images', 5), async (req: AuthedRequest, res) => {
   try {
-    const { title, description, category, condition, price = 0, location, availableFrom, availableTo } = req.body as any;
-    const images = (req.files as Express.Multer.File[] || []).map(f => ({ url: `/uploads/${path.basename(f.path)}` }));
+    const body = createListingSchema.parse({
+      ...req.body,
+      price: req.body.price ? Number(req.body.price) : 0,
+      isGiveaway: req.body.isGiveaway === 'true' || req.body.isGiveaway === true,
+    });
+
+    const files = req.files as Express.Multer.File[];
+    const images = files.map((f) => ({
+      url: `/uploads/${path.basename(f.path)}`,
+    }));
+
     const listing = await prisma.listing.create({
       data: {
-        title,
-        description,
-        category,
-        condition,
-        price: Number(price),
-        location,
-        availableFrom: availableFrom ? new Date(availableFrom) : null,
-        availableTo: availableTo ? new Date(availableTo) : null,
-        campus: req.user.campus,
-        seller: { connect: { id: req.user.id } },
-        images: { create: images }
+        title: body.title,
+        description: body.description,
+        category: body.category,
+        condition: body.condition,
+        price: body.price,
+        isGiveaway: body.isGiveaway,
+        status: body.status,
+        location: body.location,
+        zipcode: body.zipcode,
+        availableFrom: body.availableFrom ? new Date(body.availableFrom) : null,
+        availableTo: body.availableTo ? new Date(body.availableTo) : null,
+        campusId: req.user.campusId,
+        sellerId: req.user.id,
+        images: { create: images },
       },
-      include: { images: true }
+      include: {
+        images: true,
+        seller: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+          },
+        },
+      },
     });
-    res.json({ listing });
-  } catch (err) {
+
+    res.status(201).json({ listing });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.errors[0].message });
+    }
+    console.error('Create listing error:', err);
     res.status(500).json({ error: 'Could not create listing' });
   }
 });
 
+// GET /listings/:id - Get single listing
 router.get('/:id', authRequired, async (req: AuthedRequest, res) => {
-  const listing = await prisma.listing.findUnique({ where: { id: req.params.id }, include: { images: true, seller: true } });
-  if (!listing || listing.campus !== req.user.campus) return res.status(404).json({ error: 'Not found' });
-  res.json({ listing });
+  try {
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id },
+      include: {
+        images: true,
+        seller: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+          },
+        },
+      },
+    });
+
+    if (!listing) {
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+
+    // Only show listings from same campus
+    if (listing.campusId !== req.user.campusId) {
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+
+    res.json({ listing });
+  } catch (err) {
+    console.error('Get listing error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
+// PATCH /listings/:id - Update listing
 router.patch('/:id', authRequired, async (req: AuthedRequest, res) => {
-  const listing = await prisma.listing.findUnique({ where: { id: req.params.id } });
-  if (!listing) return res.status(404).json({ error: 'Not found' });
-  if (listing.sellerId !== req.user.id) return res.status(403).json({ error: 'Not owner' });
-  const data: any = {};
-  const { title, description, price, isSold, condition, location } = req.body;
-  if (title) data.title = title;
-  if (description) data.description = description;
-  if (price !== undefined) data.price = Number(price);
-  if (isSold !== undefined) data.isSold = isSold === 'true' || isSold === true;
-  if (condition) data.condition = condition;
-  if (location) data.location = location;
-  const updated = await prisma.listing.update({ where: { id: req.params.id }, data });
-  res.json({ listing: updated });
+  try {
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!listing) {
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+
+    // Only seller or admin can update
+    if (listing.sellerId !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const body = updateListingSchema.parse({
+      ...req.body,
+      price: req.body.price !== undefined ? Number(req.body.price) : undefined,
+      isGiveaway: req.body.isGiveaway !== undefined ? (req.body.isGiveaway === 'true' || req.body.isGiveaway === true) : undefined,
+    });
+
+    const data: any = {};
+    if (body.title) data.title = body.title;
+    if (body.description) data.description = body.description;
+    if (body.category) data.category = body.category;
+    if (body.condition) data.condition = body.condition;
+    if (body.price !== undefined) data.price = body.price;
+    if (body.isGiveaway !== undefined) data.isGiveaway = body.isGiveaway;
+    if (body.status) data.status = body.status;
+    if (body.location !== undefined) data.location = body.location;
+    if (body.zipcode !== undefined) data.zipcode = body.zipcode;
+    if (body.availableFrom !== undefined) data.availableFrom = body.availableFrom ? new Date(body.availableFrom) : null;
+    if (body.availableTo !== undefined) data.availableTo = body.availableTo ? new Date(body.availableTo) : null;
+
+    const updated = await prisma.listing.update({
+      where: { id: req.params.id },
+      data,
+      include: {
+        images: true,
+        seller: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+          },
+        },
+      },
+    });
+
+    res.json({ listing: updated });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.errors[0].message });
+    }
+    console.error('Update listing error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
+// DELETE /listings/:id - Delete listing
 router.delete('/:id', authRequired, async (req: AuthedRequest, res) => {
-  const listing = await prisma.listing.findUnique({ where: { id: req.params.id } });
-  if (!listing) return res.status(404).json({ error: 'Not found' });
-  if (listing.sellerId !== req.user.id) return res.status(403).json({ error: 'Not owner' });
-  await prisma.listing.delete({ where: { id: req.params.id } });
-  res.json({ ok: true });
-});
+  try {
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id },
+    });
 
-router.post('/:id/status', authRequired, async (req: AuthedRequest, res) => {
-  const listing = await prisma.listing.findUnique({ where: { id: req.params.id } });
-  if (!listing) return res.status(404).json({ error: 'Not found' });
-  if (listing.sellerId !== req.user.id) return res.status(403).json({ error: 'Not owner' });
-  const { isSold } = req.body;
-  const updated = await prisma.listing.update({ where: { id: req.params.id }, data: { isSold: !!isSold } });
-  res.json({ listing: updated });
+    if (!listing) {
+      return res.status(404).json({ error: 'Listing not found' });
+    }
+
+    // Only seller or admin can delete
+    if (listing.sellerId !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    await prisma.listing.delete({ where: { id: req.params.id } });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete listing error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 export default router;
