@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import http from 'http';
 import { Server as IOServer } from 'socket.io';
 import cors from 'cors';
@@ -49,7 +49,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/blocks', blockRoutes);
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', (req: Request, res: Response) => {
   res.json({ ok: true, timestamp: new Date().toISOString() });
 });
 

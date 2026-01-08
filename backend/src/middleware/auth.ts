@@ -2,8 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../prisma';
 
+// Properly extend Express Request with all properties
 export interface AuthedRequest extends Request {
   user?: any;
+  body: any;
+  params: any;
+  query: any;
+  files?: Express.Multer.File[] | { [fieldname: string]: Express.Multer.File[] };
 }
 
 export const authRequired = async (req: AuthedRequest, res: Response, next: NextFunction) => {

@@ -3,6 +3,19 @@
 import path from 'path';
 import fs from 'fs';
 
+// Multer file type
+interface MulterFile {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  size: number;
+  destination: string;
+  filename: string;
+  path: string;
+  buffer?: Buffer;
+}
+
 export interface UploadedFile {
   url: string;
   filename: string;
@@ -13,7 +26,7 @@ export interface UploadedFile {
  * Returns the public URL of the uploaded file
  */
 export async function uploadFile(
-  file: Express.Multer.File,
+  file: MulterFile,
   folder: string = 'listings'
 ): Promise<UploadedFile> {
   // Cloudinary (recommended for production)
@@ -31,7 +44,7 @@ export async function uploadFile(
 }
 
 async function uploadToCloudinary(
-  file: Express.Multer.File,
+  file: MulterFile,
   folder: string
 ): Promise<UploadedFile> {
   // Dynamic import to avoid errors if cloudinary not installed
@@ -72,7 +85,7 @@ async function uploadToCloudinary(
 }
 
 async function uploadToS3(
-  file: Express.Multer.File,
+  file: MulterFile,
   folder: string
 ): Promise<UploadedFile> {
   // Dynamic import to avoid errors if aws-sdk not installed
@@ -111,7 +124,7 @@ async function uploadToS3(
 }
 
 async function uploadLocal(
-  file: Express.Multer.File,
+  file: MulterFile,
   folder: string
 ): Promise<UploadedFile> {
   // For local storage, file is already saved by multer
