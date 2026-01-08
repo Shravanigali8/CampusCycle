@@ -8,7 +8,11 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "seed:prod": "node -r ts-node/register prisma/seed.ts",
     "seed": "ts-node-dev prisma/seed.ts",
+    "postinstall": "prisma generate",
     "test": "jest"
   },
   "dependencies": {
@@ -24,6 +28,10 @@
     "socket.io-client": "^4.7.2",
     "uuid": "^9.0.0",
     "zod": "^3.22.4"
+  },
+  "optionalDependencies": {
+    "cloudinary": "^1.41.0",
+    "aws-sdk": "^2.1691.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

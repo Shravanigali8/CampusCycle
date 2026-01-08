@@ -5,6 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { z } from 'zod';
+import { uploadFile } from '../utils/storage';
 
 const router = express.Router();
 
@@ -164,9 +165,26 @@ router.post('/', authRequired, upload.array('images', 5), async (req: AuthedRequ
     });
 
     const files = req.files as Express.Multer.File[];
-    const images = files.map((f) => ({
-      url: `/uploads/${path.basename(f.path)}`,
-    }));
+    
+    // Upload images to cloud storage or local
+    let images: { url: string }[];
+    if (files.length > 0) {
+      try {
+        const imagePromises = files.map((file) => uploadFile(file, 'listings'));
+        const uploadedImages = await Promise.all(imagePromises);
+        images = uploadedImages.map((img) => ({
+          url: img.url,
+        }));
+      } catch (error) {
+        console.error('Image upload error:', error);
+        // Fallback to local storage
+        images = files.map((f) => ({
+          url: `/uploads/${path.basename(f.path)}`,
+        }));
+      }
+    } else {
+      images = [];
+    }
 
     const listing = await prisma.listing.create({
       data: {
