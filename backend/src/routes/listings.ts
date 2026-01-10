@@ -248,6 +248,16 @@ router.post('/', authRequired, upload.array('images', 5), async (req: AuthedRequ
 // GET /listings/:id - Get single listing
 router.get('/:id', authRequired, async (req: AuthedRequest, res) => {
   try {
+    // Get campusId from user - could be direct field or from campus relation
+    let userCampusId = req.user.campusId;
+    if (!userCampusId && req.user.campus) {
+      userCampusId = req.user.campus.id;
+    }
+    
+    if (!userCampusId) {
+      return res.status(400).json({ error: 'User must have a campus assigned' });
+    }
+
     const listing = await prisma.listing.findUnique({
       where: { id: req.params.id },
       include: {
@@ -268,7 +278,7 @@ router.get('/:id', authRequired, async (req: AuthedRequest, res) => {
     }
 
     // Only show listings from same campus
-    if (listing.campusId !== req.user.campusId) {
+    if (listing.campusId !== userCampusId) {
       return res.status(404).json({ error: 'Listing not found' });
     }
 
