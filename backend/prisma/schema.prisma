@@ -7,83 +7,140 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum ListingStatus {
+  AVAILABLE
+  CLAIMED
+  SOLD
+}
+
+model Campus {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  code        String    @unique
+  createdAt   DateTime  @default(now())
+  users       User[]
+  listings    Listing[]
+}
+
 model User {
   id           String    @id @default(uuid())
   email        String    @unique
+  passwordHash String?
   name         String?
-  campus       String
+  campusId     String
+  campus       Campus    @relation(fields: [campusId], references: [id])
   gradYear     Int?
   avatar       String?
+  role         UserRole  @default(USER)
   isVerified   Boolean   @default(false)
   verifyToken  String?   @unique
   createdAt    DateTime  @default(now())
   listings     Listing[]
-  conversations Conversation[] @relation("participantA")
-  messages     Message[]
-  blocks       Block[]
+  sentMessages Message[] @relation("MessageSender")
+  chatThreadsAsBuyer ChatThread[] @relation("Buyer")
+  chatThreadsAsSeller ChatThread[] @relation("Seller")
+  reportsMade  Report[]  @relation("Reporter")
+  reportsReceived Report[] @relation("TargetUser")
+  blocks       Block[]   @relation("Blocker")
+  blockedBy    Block[]   @relation("Blocked")
 }
 
 model Listing {
-  id          String    @id @default(uuid())
+  id          String       @id @default(uuid())
   title       String
   description String
   category    String
   condition   String
   price       Float
+  isGiveaway  Boolean      @default(false)
+  status      ListingStatus @default(AVAILABLE)
   location    String?
+  zipcode     String?
   availableFrom DateTime?
   availableTo   DateTime?
   images      ListingImage[]
-  seller      User      @relation(fields: [sellerId], references: [id])
+  chatThreads ChatThread[]
+  reports     Report[]
+  seller      User         @relation(fields: [sellerId], references: [id])
   sellerId    String
-  campus      String
-  isSold      Boolean   @default(false)
-  createdAt   DateTime  @default(now())
+  campusId    String
+  campus      Campus       @relation(fields: [campusId], references: [id])
+  isSold      Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 }
 
 model ListingImage {
   id        String  @id @default(uuid())
   url       String
-  listing   Listing @relation(fields: [listingId], references: [id])
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
   listingId String
+
+  @@index([listingId])
 }
 
-model Conversation {
+model ChatThread {
   id        String   @id @default(uuid())
-  userA     User     @relation("participantA", fields: [userAId], references: [id])
-  userAId   String
-  userB     User     @relation("participantB", fields: [userBId], references: [id])
-  userBId   String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listingId String
+  buyer     User     @relation("Buyer", fields: [buyerId], references: [id])
+  buyerId   String
+  seller    User     @relation("Seller", fields: [sellerId], references: [id])
+  sellerId  String
   messages  Message[]
   updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([listingId, buyerId])
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([listingId])
 }
 
 model Message {
-  id             String   @id @default(uuid())
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
-  conversationId String
-  sender         User     @relation(fields: [senderId], references: [id])
+  id             String     @id @default(uuid())
+  thread         ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  threadId       String
+  sender         User       @relation("MessageSender", fields: [senderId], references: [id])
   senderId       String
   body           String
-  createdAt      DateTime @default(now())
-  isRead         Boolean  @default(false)
+  readAt         DateTime?
+  createdAt      DateTime   @default(now())
+
+  @@index([threadId])
+  @@index([senderId])
 }
 
 model Report {
-  id        String   @id @default(uuid())
-  reporter  User     @relation(fields: [reporterId], references: [id])
-  reporterId String
-  listing   Listing? @relation(fields: [listingId], references: [id])
-  listingId String?
-  reason    String
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  reporter    User     @relation("Reporter", fields: [reporterId], references: [id])
+  reporterId  String
+  listing     Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listingId   String?
+  targetUser  User?    @relation("TargetUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  targetUserId String?
+  reason      String
+  createdAt   DateTime @default(now())
+
+  @@index([reporterId])
+  @@index([listingId])
+  @@index([targetUserId])
 }
 
 model Block {
-  id       String @id @default(uuid())
-  blocker  User   @relation(fields: [blockerId], references: [id])
+  id        String   @id @default(uuid())
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id])
   blockerId String
-  blocked  User   @relation(fields: [blockedId], references: [id])
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id])
   blockedId String
   createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
 }
